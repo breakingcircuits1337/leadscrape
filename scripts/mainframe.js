@@ -195,7 +195,12 @@ function render() {
 }
 
 function openReader(item) {
-  const url = item.url || `reader.html?id=${encodeURIComponent(item.id)}`;
+  // Build a robust absolute URL for reader.html relative to the current page
+  const readerUrl = new URL("reader.html", window.location.href);
+  readerUrl.searchParams.set("id", item.id);
+  const url = item.url && item.url.startsWith("http")
+    ? item.url
+    : readerUrl.toString();
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
