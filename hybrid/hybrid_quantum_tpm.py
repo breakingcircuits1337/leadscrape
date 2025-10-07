@@ -63,6 +63,9 @@ from hybrid.quantum_neuromodulation import (
     StateDependentQuantumNeuromodulation,
 )
 
+# Affective-cognitive mapping
+from hybrid.affective_cognitive import emotion_drive_to_neuromod_angles
+
 try:
     # Optional IBM runtime imports (only needed for hardware runs)
     from qiskit_ibm_runtime import QiskitRuntimeService, Sampler, Session, Options
@@ -373,6 +376,21 @@ class HybridQuantumTemporalNetwork:
                     nn.Linear(manifold_dim, count),
                     nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
                 )
+        # Affective fusion defaults
+        self.affect_emotion_state: Dict[str, float] = {}
+        self.affect_drive_state: Dict[str, float] = {}
+        self.affect_alpha: float = 1.0  # 1.0 = TPM-only, 0.0 = affect-only
+
+    def set_affect_state(self, emotion_state: Dict[str, float], drive_state: Dict[str, float], alpha: float = 0.5):
+        """
+        Set affective state for neuromodulation fusion.
+
+        alpha in [0,1]: blend factor between TPM-driven neuromodulation (alpha)
+                        and affect-driven neuromodulation (1-alpha).
+        """
+        self.affect_emotion_state = dict(emotion_state or {})
+        self.affect_drive_state = dict(drive_state or {})
+        self.affect_alpha = float(np.clip(alpha, 0.0, 1.0))
 
     def _tpm_to_params(self, x: torch.Tensor) -> np.ndarray:
         """
