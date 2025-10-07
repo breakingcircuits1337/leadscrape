@@ -537,6 +537,93 @@ class HybridQuantumTemporalNetwork:
         new_params = np.clip(params + step, clip_low, clip_high).astype(np.float32)
         return {'params': new_params, 'sigma': new_sigma.astype(np.float32)}
 
+    # -------- CMA-ES helpers --------
+    def _init_cma_es(self, mean: np.ndarray, popsize: int):
+        dim = mean.size
+        mu = popsize // 2
+        # recombination weights
+        weights = np.log(mu + 0.5) - np.log(np.arange(1, mu + 1))
+        weights = weights / np.sum(weights)
+        mueff = np.sum(weights) ** 2 / np.sum(weights ** 2)
+        # strategy parameters
+        cc = (4 + mueff / dim) / (dim + 4 + 2 * mueff / dim)
+        cs = (mueff + 2) / (dim + mueff + 5)
+        c1 = 2 / ((dim + 1.3) ** 2 + mueff)
+        cmu = min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((dim + 2) ** 2 + mueff))
+        damps = 1 + 2 * max(0, np.sqrt((mueff - 1) / (dim + 1)) - 1) + cs
+        # init
+        state = {
+            'mean': mean.astype(np.float32),
+            'sigma': 0.3,
+            'C': np.eye(dim, dtype=np.float32),
+            'pc': np.zeros(dim, dtype=np.float32),
+            'ps': np.zeros(dim, dtype=np.float32),
+            'B': np.eye(dim, dtype=np.float32),
+            'D': np.ones(dim, dtype=np.float32),
+            'invsqrtC': np.eye(dim, dtype=np.float32),
+            'eigensolved': 0,
+            'popsize': popsize,
+            'mu': mu,
+            'weights': weights.astype(np.float32),
+            'mueff': mueff,
+            'cc': cc, 'cs': cs, 'c1': c1, 'cmu': cmu, 'damps': damps,
+        }
+        return state
+
+    def _cma_ask(self, state, rng):
+        dim = state['mean'].size
+        B, D = state['B'], state['D']
+        BD = B * D  # each column scaled
+        zs = rng.normal(0, 1, size=(state['popsize'], dim)).astype(np.float32)
+        ys = zs @ BD.T
+        xs = state['mean'] + state['sigma'] * ys
+        # wrap onto [0, 2π]
+        xs = np.mod(xs, 2 * np.pi)
+        return xs, zs, ys
+
+    def _cma_tell(self, state, xs, zs, ys, fitness, rng):
+        # sort by fitness (descending good)
+        idx = np.argsort(fitness)[::-1]
+        xs, zs, ys = xs[idx], zs[idx], ys[idx]
+        w = state['weights'][:state['mu']]
+        y_w = np.sum(ys[:state['mu']] * w[:, None], axis=0)
+        z_w = np.sum(zs[:state['mu']] * w[:, None], axis=0)
+
+        dim = state['mean'].size
+        cs, cc, c1, cmu, damps = state['cs'], state['cc'], state['c1'], state['cmu'], state['damps']
+        mueff = state['mueff']
+
+        # update mean
+        state['mean'] = np.mod(state['mean'] + state['sigma'] * y_w, 2 * np.pi)
+
+        # update evolution paths
+        ps = (1 - cs) * state['ps'] + np.sqrt(cs * (2 - cs) * mueff) * (state['invsqrtC'] @ z_w)
+        state['ps'] = ps
+        hsig = (np.linalg.norm(ps) / np.sqrt(1 - (1 - cs) ** (2 * (state['eigensolved'] + 1))) /
+                (1.4 + 2 / (dim + 1))) < 2
+        pc = (1 - cc) * state['pc'] + hsig * np.sqrt(cc * (2 - cc) * mueff) * y_w
+        state['pc'] = pc
+
+        # covariance update
+        rank_one = np.outer(pc, pc)
+        rank_mu = np.zeros_like(state['C'])
+        for i in range(state['mu']):
+            yy = ys[i][:, None] @ ys[i][None, :]
+            rank_mu += w[i] * yy
+
+        state['C'] = ((1 - c1 - cmu) * state['C'] + c1 * rank_one + cmu * rank_mu).astype(np.float32)
+        # step-size control
+        state['sigma'] *= np.exp((cs / damps) * (np.linalg.norm(ps) / (np.sqrt(dim) * (1.0)) - 1))
+
+        # Decompose covariance periodically
+        state['eigensolved'] += 1
+        if state['eigensolved'] % max(1, int(0.5 * dim / (c1 + cmu))) == 0:
+            d, B = np.linalg.eigh(state['C'])
+            d = np.maximum(d, 1e-12)
+            state['D'] = np.sqrt(d).astype(np.float32)
+            state['B'] = B.astype(np.float32)
+            state['invsqrtC'] = (B @ np.diag(1.0 / state['D']) @ B.T).astype(np.float32)
+
     def run_on_ibm(
         self,
         x: torch.Tensor,
@@ -547,11 +634,14 @@ class HybridQuantumTemporalNetwork:
         use_dynamic_decoupling: bool = True,
         resilience_level: int = 3,
         objectives: Dict[str, float] = None,
+        use_cma_es: bool = False,
+        cma_popmult: float = 1.0,
         **task_kwargs,
     ):
         """
         Hardware/runtime execution with simple evolutionary loop around TPM->params.
         Supports multi-objective fitness aggregation via 'objectives' dict.
+        Supports CMA-ES covariance adaptation when use_cma_es=True.
         Requires IBM Quantum account configured for QiskitRuntimeService.
         """
         if not HAS_IBM_RUNTIME:
@@ -575,30 +665,46 @@ class HybridQuantumTemporalNetwork:
             options.dynamical_decoupling.enable = True
             options.dynamical_decoupling.sequence_type = 'XY4'
 
-        # Initialize population with self-organizing (self-adaptive) step sizes
         base_params = self._tpm_to_params(x)
         rng = np.random.default_rng(0)
-        population = self._init_es_population(base_params, population_size, init_sigma=0.15)
         fitness_history = []
+
+        if use_cma_es:
+            popsize = max(4, int(cma_popmult * population_size))
+            cma = self._init_cma_es(base_params, popsize)
+        else:
+            population = self._init_es_population(base_params, population_size, init_sigma=0.15)
 
         with Session(service=service, backend=backend) as session:
             sampler = Sampler(session=session, options=options)
 
             for it in range(num_iterations):
                 circuits = []
-                for indiv in population:
-                    params = indiv['params']
-                    if not self.use_neuromodulation:
-                        param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
-                    else:
-                        param_dict = {self.neuromod_params[i]: float(params[i]) for i in range(len(params))}
-                    circuits.append(self.qc.bind_parameters(param_dict))
+                # Generate candidates
+                if use_cma_es:
+                    xs, zs, ys = self._cma_ask(cma, rng)
+                    # bind
+                    for params in xs:
+                        if not self.use_neuromodulation:
+                            param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
+                        else:
+                            param_dict = {self.neuromod_params[i]: float(params[i]) for i in range(len(params))}
+                        circuits.append(self.qc.bind_parameters(param_dict))
+                else:
+                    for indiv in population:
+                        params = indiv['params']
+                        if not self.use_neuromodulation:
+                            param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
+                        else:
+                            param_dict = {self.neuromod_params[i]: float(params[i]) for i in range(len(params))}
+                        circuits.append(self.qc.bind_parameters(param_dict))
 
                 job = sampler.run(circuits)
                 result = job.result()
 
                 fitness_scores = []
-                for i in range(population_size):
+                n_candidates = len(circuits)
+                for i in range(n_candidates):
                     quasi_dist = result.quasi_dists[i]
                     counts = {format(k, f'0{self.qbrain.total_qubits}b'): int(v * shots) for k, v in quasi_dist.items()}
                     fitness = self._compute_multi_objective_fitness(counts, objectives or {}, **task_kwargs)
@@ -608,12 +714,18 @@ class HybridQuantumTemporalNetwork:
                 best_fitness = float(fitness_scores[best_idx])
                 fitness_history.append(best_fitness)
 
-                # Elitism + self-adaptive mutations (log-normal step sizes)
-                elite = population[best_idx]
-                new_population = [elite]
-                for _ in range(population_size - 1):
-                    mutant = self._mutate_es(elite, rng, 0.0, 2 * np.pi)
-                    new_population.append(mutant)
-                population = new_population
+                # Update strategy
+                if use_cma_es:
+                    self._cma_tell(cma, xs, zs, ys, np.array(fitness_scores), rng)
+                else:
+                    elite = population[best_idx]
+                    new_population = [elite]
+                    for _ in range(len(population) - 1):
+                        mutant = self._mutate_es(elite, rng, 0.0, 2 * np.pi)
+                        new_population.append(mutant)
+                    population = new_population
 
-        return population[0]['params'], fitness_history
+        if use_cma_es:
+            return np.mod(cma['mean'], 2 * np.pi).astype(np.float32), fitness_history
+        else:
+            return population[0]['params'], fitness_history
