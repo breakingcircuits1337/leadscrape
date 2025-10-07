@@ -110,48 +110,117 @@ class QRNN(nn.Module):
         return output
 
 # -----------------------------------------------------------
-# 3. Example Usage
+# 3. Small Character-Level Dataset Example
 # -----------------------------------------------------------
+
+class CharSequenceDataset(torch.utils.data.Dataset):
+    """
+    Synthetic character-level sequence classification dataset.
+
+    - Vocabulary: lowercase letters (26)
+    - Label: (number of vowels in sequence) mod NUM_CLASSES
+    """
+    def __init__(self, num_samples=256, seq_len=8, num_classes=4, seed=42):
+        super().__init__()
+        rng = torch.Generator().manual_seed(seed)
+        self.seq_len = seq_len
+        self.num_classes = num_classes
+
+        # Build vocab and mappings
+        self.vocab = [chr(ord('a') + i) for i in range(26)]
+        self.char2idx = {c: i for i, c in enumerate(self.vocab)}
+        self.vowels = set(list("aeiou"))
+
+        # Generate samples
+        X = []
+        y = []
+        for _ in range(num_samples):
+            chars = torch.randint(0, len(self.vocab), (seq_len,), generator=rng)
+            # Count vowels in the sequence
+            vowel_count = sum(1 for idx in chars.tolist() if self.vocab[idx] in self.vowels)
+            label = vowel_count % num_classes
+            X.append(chars)
+            y.append(label)
+        self.X = torch.stack(X)  # [N, T]
+        self.y = torch.tensor(y, dtype=torch.long)  # [N]
+
+    def __len__(self):
+        return self.X.shape[0]
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+
+def evaluate(model, loader, criterion):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for xb, yb in loader:
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            total_loss += loss.item() * xb.size(0)
+            preds = torch.argmax(logits, dim=-1)
+            correct += (preds == yb).sum().item()
+            total += xb.size(0)
+    avg_loss = total_loss / max(1, total)
+    acc = correct / max(1, total)
+    return avg_loss, acc
+
+
 if __name__ == '__main__':
     # --- Model Hyperparameters ---
-    VOCAB_SIZE = 1000
-    EMBEDDING_DIM = 12
-    N_QUBITS = 6
+    VOCAB_SIZE = 26
+    EMBEDDING_DIM = 8
+    N_QUBITS = 4
     HIDDEN_SIZE = N_QUBITS
-    QUANTUM_LAYERS = 3  # Number of layers in the sophisticated circuit
-    OUTPUT_SIZE = 10
-    
+    QUANTUM_LAYERS = 2
+    NUM_CLASSES = 4
+
     # --- Data Hyperparameters ---
-    BATCH_SIZE = 5
-    SEQ_LENGTH = 10
+    TRAIN_SAMPLES = 256
+    TEST_SAMPLES = 64
+    SEQ_LENGTH = 8
+    BATCH_SIZE = 8
+    EPOCHS = 5
+    LR = 0.01
+
+    # Build datasets and loaders
+    train_ds = CharSequenceDataset(num_samples=TRAIN_SAMPLES, seq_len=SEQ_LENGTH, num_classes=NUM_CLASSES, seed=123)
+    test_ds = CharSequenceDataset(num_samples=TEST_SAMPLES, seq_len=SEQ_LENGTH, num_classes=NUM_CLASSES, seed=456)
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
 
     print("Initializing the QRNN with a Strongly Entangling circuit...")
     model = QRNN(
         vocab_size=VOCAB_SIZE,
         embedding_dim=EMBEDDING_DIM,
         hidden_size=HIDDEN_SIZE,
-        output_size=OUTPUT_SIZE,
+        output_size=NUM_CLASSES,
         n_qubits=N_QUBITS,
         n_q_layers=QUANTUM_LAYERS
     )
     print(model)
-    
-    # --- Create Dummy Data ---
-    dummy_input = torch.randint(0, VOCAB_SIZE, (BATCH_SIZE, SEQ_LENGTH))
-    dummy_labels = torch.randint(0, OUTPUT_SIZE, (BATCH_SIZE,))
-    
-    # --- Training Loop Example ---
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-    print("\n--- Starting a simple training demonstration ---")
-    for epoch in range(5):
-        optimizer.zero_grad()
-        output = model(dummy_input)
-        loss = criterion(output, dummy_labels)
-        loss.backward()
-        optimizer.step()
-        
-        print(f"Epoch {epoch+1:02d}, Loss: {loss.item():.4f}")
+    # Training setup
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    print("\n--- Training on synthetic character-level dataset ---")
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+        running_loss = 0.0
+        for xb, yb in train_loader:
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * xb.size(0)
+
+        train_loss = running_loss / len(train_ds)
+        val_loss, val_acc = evaluate(model, test_loader, criterion)
+        print(f"Epoch {epoch:02d} | train_loss: {train_loss:.4f} | val_loss: {val_loss:.4f} | val_acc: {val_acc:.3f}")
 
     print("\n--- Demonstration Complete ---")
