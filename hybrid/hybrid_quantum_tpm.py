@@ -482,16 +482,16 @@ class HybridQuantumTemporalNetwork:
             'memory': evalr.memory_retrieval_fitness,
             'classification': evalr.classification_fitness,
             'spatial': evalr.spatial_reasoning_fitness,
-            'working_memory': evalr.working_memory_fitness if hasattr(evalr, 'working_memory_fitness') else None,
-            'attention': evalr.attention_focus_fitness if hasattr(evalr, 'attention_focus_fitness') else None,
-            'sequence': evalr.sequence_learning_fitness if hasattr(evalr, 'sequence_learning_fitness') else None,
-            'problem_solving': evalr.problem_solving_fitness if hasattr(evalr, 'problem_solving_fitness') else None,
-            'flexibility': evalr.cognitive_flexibility_fitness if hasattr(evalr, 'cognitive_flexibility_fitness') else None,
-            'error_detection': evalr.error_detection_fitness if hasattr(evalr, 'error_detection_fitness') else None,
-            'inhibition': evalr.inhibition_control_fitness if hasattr(evalr, 'inhibition_control_fitness') else None,
-            'analogy': evalr.analogical_reasoning_fitness if hasattr(evalr, 'analogical_reasoning_fitness') else None,
-            'reward_learning': evalr.reward_learning_fitness if hasattr(evalr, 'reward_learning_fitness') else None,
-            'predictive': evalr.predictive_coding_fitness if hasattr(evalr, 'predictive_coding_fitness') else None,
+            'working_memory': getattr(evalr, 'working_memory_fitness', None),
+            'attention': getattr(evalr, 'attention_focus_fitness', None),
+            'sequence': getattr(evalr, 'sequence_learning_fitness', None),
+            'problem_solving': getattr(evalr, 'problem_solving_fitness', None),
+            'flexibility': getattr(evalr, 'cognitive_flexibility_fitness', None),
+            'error_detection': getattr(evalr, 'error_detection_fitness', None),
+            'inhibition': getattr(evalr, 'inhibition_control_fitness', None),
+            'analogy': getattr(evalr, 'analogical_reasoning_fitness', None),
+            'reward_learning': getattr(evalr, 'reward_learning_fitness', None),
+            'predictive': getattr(evalr, 'predictive_coding_fitness', None),
         }
 
         total = 0.0
@@ -509,6 +509,33 @@ class HybridQuantumTemporalNetwork:
             weight_sum += w
 
         return total / weight_sum if weight_sum > 0 else 0.0
+
+    # -------- Self-organizing ES helpers --------
+    def _init_es_population(self, base_params: np.ndarray, population_size: int, init_sigma: float = 0.15):
+        """Initialize population as list of dicts with params and per-parameter sigma."""
+        pop = []
+        for _ in range(population_size):
+            pop.append({
+                'params': base_params.copy(),
+                'sigma': np.full_like(base_params, init_sigma, dtype=np.float32),
+            })
+        return pop
+
+    def _mutate_es(self, elite: Dict[str, np.ndarray], rng, clip_low: float, clip_high: float):
+        """Self-adaptive log-normal mutation (per-parameter step sizes)."""
+        params = elite['params']
+        sigma = elite['sigma']
+        n = params.size
+        tau0 = 1.0 / np.sqrt(2.0 * n)
+        tau = 1.0 / np.sqrt(2.0 * np.sqrt(n))
+        # Global and individual Gaussian noise
+        N0 = rng.normal(0.0, 1.0)
+        Ni = rng.normal(0.0, 1.0, size=n)
+        new_sigma = sigma * np.exp(tau0 * N0 + tau * Ni)
+        # Mutate parameters
+        step = new_sigma * rng.normal(0.0, 1.0, size=n)
+        new_params = np.clip(params + step, clip_low, clip_high).astype(np.float32)
+        return {'params': new_params, 'sigma': new_sigma.astype(np.float32)}
 
     def run_on_ibm(
         self,
@@ -548,11 +575,10 @@ class HybridQuantumTemporalNetwork:
             options.dynamical_decoupling.enable = True
             options.dynamical_decoupling.sequence_type = 'XY4'
 
-        # Initialize population by TPM-driven params + random perturbations
+        # Initialize population with self-organizing (self-adaptive) step sizes
         base_params = self._tpm_to_params(x)
         rng = np.random.default_rng(0)
-        population = [np.clip(base_params + rng.normal(0, 0.1, size=base_params.shape), 0, 2 * np.pi)
-                      for _ in range(population_size)]
+        population = self._init_es_population(base_params, population_size, init_sigma=0.15)
         fitness_history = []
 
         with Session(service=service, backend=backend) as session:
@@ -560,7 +586,8 @@ class HybridQuantumTemporalNetwork:
 
             for it in range(num_iterations):
                 circuits = []
-                for params in population:
+                for indiv in population:
+                    params = indiv['params']
                     if not self.use_neuromodulation:
                         param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
                     else:
@@ -581,12 +608,12 @@ class HybridQuantumTemporalNetwork:
                 best_fitness = float(fitness_scores[best_idx])
                 fitness_history.append(best_fitness)
 
-                # Elitism + Gaussian mutations around best
-                elite = population[best_idx].copy()
+                # Elitism + self-adaptive mutations (log-normal step sizes)
+                elite = population[best_idx]
                 new_population = [elite]
                 for _ in range(population_size - 1):
-                    mutant = np.clip(elite + rng.normal(0, 0.15, size=elite.shape), 0, 2 * np.pi)
+                    mutant = self._mutate_es(elite, rng, 0.0, 2 * np.pi)
                     new_population.append(mutant)
                 population = new_population
 
-        return population[0], fitness_history
+        return population[0]['params'], fitness_history
