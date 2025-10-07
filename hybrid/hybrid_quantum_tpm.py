@@ -256,14 +256,13 @@ from hybrid.quantum_brain_cognitive import FastQuantumBrain
 class HybridQuantumTemporalNetwork:
     """
     Combines TPM (PyTorch) with either:
-    - Cognitive FastQuantumBrain circuit (parameterized by region-aware mapping), or
+    - Cognitive FastQuantumBrain circuit (parameterized by region-aware mapping),
+    - Fast time-manifold cognitive circuit (theta/tau driven by TPM), or
     - Neuromodulated circuit (state-dependent control gates with parameterized strengths)
 
     Pipeline:
     1) Run TPM on input sequence to get phase features and coordinates.
-    2) Map TPM outputs either:
-       a) to brain region parameters (cognitive circuit), or
-       b) to neuromodulation ParameterVector (neuromodulated circuit).
+    2) Map TPM outputs to selected circuit parameters.
     3) Bind parameters and execute the circuit (Aer or IBM Runtime).
     4) Evaluate task-specific fitness via cognitive evaluator.
     """
@@ -277,8 +276,11 @@ class HybridQuantumTemporalNetwork:
         use_time_warping: bool = True,
         task_type: str = 'entropy',
         use_neuromodulation: bool = False,
+        use_fast_time_manifold: bool = False,
+        fast_depth: int = 2,
     ):
         self.use_neuromodulation = use_neuromodulation
+        self.use_fast_time_manifold = use_fast_time_manifold
 
         self.tpm = TemporalPhaseManifold(
             input_dim=input_dim,
@@ -292,36 +294,7 @@ class HybridQuantumTemporalNetwork:
         # Fitness evaluator (using cognitive brain for task scoring)
         self.qbrain = FastQuantumBrain(total_qubits=total_qubits, task_type=task_type)
 
-        if not self.use_neuromodulation:
-            # Build cognitive circuit
-            self.qc = self.qbrain.build_cognitive_circuit()
-
-            # Region-aware parameter mapping:
-            # For each brain region, create a dedicated mapper that outputs that region's parameter vector.
-            self.region_param_indices: Dict[str, List[int]] = {}
-            self.region_param_counts: Dict[str, int] = {}
-
-            # Build indices for parameters by region name
-            for idx, p in enumerate(self.qbrain.all_parameters):
-                name = str(p)
-                region_prefix = name.split('_', 1)[0]
-                self.region_param_indices.setdefault(region_prefix, []).append(idx)
-
-            # Count per region
-            for region_name, indices in self.region_param_indices.items():
-                self.region_param_counts[region_name] = len(indices)
-
-            # Create per-region mappers
-            # Each mapper: [manifold_dim] -> [num_params_for_region]
-            self.region_mappers = nn.ModuleDict()
-            for region_name, count in self.region_param_counts.items():
-                self.region_mappers[region_name] = nn.Sequential(
-                    nn.Linear(manifold_dim, manifold_dim),
-                    nn.ReLU(),
-                    nn.Linear(manifold_dim, count),
-                    nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
-                )
-        else:
+        if self.use_neuromodulation:
             # Build neuromodulated circuit
             neuromod_qc, neuromod_config = create_neuromodulated_circuit(total_qubits)
             self.qc = neuromod_qc
@@ -345,12 +318,66 @@ class HybridQuantumTemporalNetwork:
                 nn.Linear(manifold_dim, self.neuromod_param_count),
                 nn.Sigmoid(),  # [0,1] -> scaled to angle range
             )
+        elif self.use_fast_time_manifold:
+            # Build fast cognitive circuit with trainable time manifold
+            self.qc = self.qbrain.build_fast_cognitive_circuit(depth=fast_depth)
+            # Identify theta and tau parameter indices by name prefix
+            self.theta_indices: List[int] = []
+            self.tau_indices: List[int] = []
+            for idx, p in enumerate(self.qbrain.all_parameters):
+                name = str(p)
+                if name.startswith('theta'):
+                    self.theta_indices.append(idx)
+                elif name.startswith('tau'):
+                    self.tau_indices.append(idx)
+
+            self.num_params = len(self.qbrain.all_parameters)
+
+            # Dedicated mappers for theta and tau
+            self.theta_mapper = nn.Sequential(
+                nn.Linear(manifold_dim, manifold_dim),
+                nn.ReLU(),
+                nn.Linear(manifold_dim, len(self.theta_indices)),
+                nn.Sigmoid(),  # [0,1] -> scaled to [0, 2π]
+            )
+            self.tau_mapper = nn.Sequential(
+                nn.Linear(manifold_dim, manifold_dim),
+                nn.ReLU(),
+                nn.Linear(manifold_dim, len(self.tau_indices)),
+                nn.Sigmoid(),  # [0,1] scaling factor
+            )
+        else:
+            # Build standard cognitive circuit
+            self.qc = self.qbrain.build_cognitive_circuit()
+
+            # Region-aware parameter mapping:
+            self.region_param_indices: Dict[str, List[int]] = {}
+            self.region_param_counts: Dict[str, int] = {}
+
+            # Build indices for parameters by region name
+            for idx, p in enumerate(self.qbrain.all_parameters):
+                name = str(p)
+                region_prefix = name.split('_', 1)[0]
+                self.region_param_indices.setdefault(region_prefix, []).append(idx)
+
+            # Count per region
+            for region_name, indices in self.region_param_indices.items():
+                self.region_param_counts[region_name] = len(indices)
+
+            # Create per-region mappers
+            self.region_mappers = nn.ModuleDict()
+            for region_name, count in self.region_param_counts.items():
+                self.region_mappers[region_name] = nn.Sequential(
+                    nn.Linear(manifold_dim, manifold_dim),
+                    nn.ReLU(),
+                    nn.Linear(manifold_dim, count),
+                    nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
+                )
 
     def _tpm_to_params(self, x: torch.Tensor) -> np.ndarray:
         """
-        Aggregate TPM features across time and batch, then produce:
-        - region-aware parameter vector (cognitive circuit), or
-        - neuromodulation parameter vector (neuromodulated circuit).
+        Aggregate TPM features across time and batch, then produce parameter vector
+        for the selected circuit mode.
         """
         with torch.no_grad():
             tpm_out, phase_info = self.tpm(x, return_phase_info=True)
@@ -362,7 +389,29 @@ class HybridQuantumTemporalNetwork:
             aggregated = phase_features.mean(dim=1).mean(dim=0)  # [D]
             aggregated = aggregated.unsqueeze(0)  # [1, D]
 
-            if not self.use_neuromodulation:
+            if self.use_neuromodulation:
+                nm_vals01 = self.neuromod_mapper(aggregated).squeeze(0).cpu().numpy()
+                nm_angles = nm_vals01 * (np.pi / 2.0)  # [0, π/2]
+                return nm_angles
+            elif self.use_fast_time_manifold:
+                # Generate theta and tau separately
+                theta01 = self.theta_mapper(aggregated).squeeze(0).cpu().numpy()
+                tau01 = self.tau_mapper(aggregated).squeeze(0).cpu().numpy()
+
+                theta_vals = theta01 * (2 * np.pi)   # [0, 2π]
+                tau_vals = tau01                     # [0, 1] scaling factors
+
+                # Assemble full parameter vector in correct order
+                num_params = len(self.qbrain.all_parameters)
+                params_full = np.zeros((num_params,), dtype=np.float32)
+
+                for local_idx, global_idx in enumerate(self.theta_indices):
+                    params_full[global_idx] = theta_vals[local_idx]
+                for local_idx, global_idx in enumerate(self.tau_indices):
+                    params_full[global_idx] = tau_vals[local_idx]
+
+                return params_full
+            else:
                 # Build full parameter vector by filling each region segment
                 num_params = self.qbrain.num_params
                 params_full = np.zeros((num_params,), dtype=np.float32)
@@ -374,12 +423,6 @@ class HybridQuantumTemporalNetwork:
                     for local_idx, global_idx in enumerate(indices):
                         params_full[global_idx] = region_vals[local_idx]
                 return params_full
-            else:
-                # Map to neuromodulation parameter strengths; scale to angle ranges
-                nm_vals01 = self.neuromod_mapper(aggregated).squeeze(0).cpu().numpy()
-                # Scale to a reasonable modulation range [0, π/2]
-                nm_angles = nm_vals01 * (np.pi / 2.0)
-                return nm_angles
 
     def quick_test(self, x: torch.Tensor, **task_kwargs) -> Tuple[Dict[str, int], float]:
         """
