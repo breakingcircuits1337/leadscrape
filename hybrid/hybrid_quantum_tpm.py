@@ -57,6 +57,12 @@ from qiskit.circuit.library import RealAmplitudes, EfficientSU2, TwoLocal
 from qiskit_aer import AerSimulator
 from qiskit.primitives import BackendEstimator
 
+# Neuromodulation (state-dependent control gates)
+from hybrid.quantum_neuromodulation import (
+    create_neuromodulated_circuit,
+    StateDependentQuantumNeuromodulation,
+)
+
 try:
     # Optional IBM runtime imports (only needed for hardware runs)
     from qiskit_ibm_runtime import QiskitRuntimeService, Sampler, Session, Options
@@ -249,13 +255,17 @@ from hybrid.quantum_brain_cognitive import FastQuantumBrain
 
 class HybridQuantumTemporalNetwork:
     """
-    Combines TPM (PyTorch) and FQB (Qiskit) into a single network.
+    Combines TPM (PyTorch) with either:
+    - Cognitive FastQuantumBrain circuit (parameterized by region-aware mapping), or
+    - Neuromodulated circuit (state-dependent control gates with parameterized strengths)
 
     Pipeline:
     1) Run TPM on input sequence to get phase features and coordinates.
-    2) Map TPM outputs to quantum circuit parameters in a structured way.
+    2) Map TPM outputs either:
+       a) to brain region parameters (cognitive circuit), or
+       b) to neuromodulation ParameterVector (neuromodulated circuit).
     3) Bind parameters and execute the circuit (Aer or IBM Runtime).
-    4) Evaluate task-specific fitness.
+    4) Evaluate task-specific fitness via cognitive evaluator.
     """
 
     def __init__(
@@ -266,7 +276,10 @@ class HybridQuantumTemporalNetwork:
         num_frequencies: int = 8,
         use_time_warping: bool = True,
         task_type: str = 'entropy',
+        use_neuromodulation: bool = False,
     ):
+        self.use_neuromodulation = use_neuromodulation
+
         self.tpm = TemporalPhaseManifold(
             input_dim=input_dim,
             output_dim=manifold_dim,  # we output manifold_dim features for richer control
@@ -275,42 +288,69 @@ class HybridQuantumTemporalNetwork:
             num_attention_layers=2,
             use_time_warping=use_time_warping,
         )
+
+        # Fitness evaluator (using cognitive brain for task scoring)
         self.qbrain = FastQuantumBrain(total_qubits=total_qubits, task_type=task_type)
-        self.qc = self.qbrain.build_cognitive_circuit()
 
-        # Region-aware parameter mapping:
-        # For each brain region, create a dedicated mapper that outputs that region's parameter vector.
-        # We identify parameter ownership by the Parameter.name prefix (e.g., "frontal_rot[...]", "amygdala_ent[...]").
-        self.region_param_indices: Dict[str, List[int]] = {}
-        self.region_param_counts: Dict[str, int] = {}
+        if not self.use_neuromodulation:
+            # Build cognitive circuit
+            self.qc = self.qbrain.build_cognitive_circuit()
 
-        # Build indices for parameters by region name
-        for idx, p in enumerate(self.qbrain.all_parameters):
-            # Parameter names are derived from ParameterVector, like 'frontal_rot0', 'frontal_ent3', etc.
-            name = str(p)
-            # Extract region prefix before the first underscore
-            # e.g., "frontal_rot0" -> "frontal"
-            region_prefix = name.split('_', 1)[0]
-            self.region_param_indices.setdefault(region_prefix, []).append(idx)
+            # Region-aware parameter mapping:
+            # For each brain region, create a dedicated mapper that outputs that region's parameter vector.
+            self.region_param_indices: Dict[str, List[int]] = {}
+            self.region_param_counts: Dict[str, int] = {}
 
-        # Count per region
-        for region_name, indices in self.region_param_indices.items():
-            self.region_param_counts[region_name] = len(indices)
+            # Build indices for parameters by region name
+            for idx, p in enumerate(self.qbrain.all_parameters):
+                name = str(p)
+                region_prefix = name.split('_', 1)[0]
+                self.region_param_indices.setdefault(region_prefix, []).append(idx)
 
-        # Create per-region mappers
-        # Each mapper: [manifold_dim] -> [num_params_for_region]
-        self.region_mappers = nn.ModuleDict()
-        for region_name, count in self.region_param_counts.items():
-            self.region_mappers[region_name] = nn.Sequential(
+            # Count per region
+            for region_name, indices in self.region_param_indices.items():
+                self.region_param_counts[region_name] = len(indices)
+
+            # Create per-region mappers
+            # Each mapper: [manifold_dim] -> [num_params_for_region]
+            self.region_mappers = nn.ModuleDict()
+            for region_name, count in self.region_param_counts.items():
+                self.region_mappers[region_name] = nn.Sequential(
+                    nn.Linear(manifold_dim, manifold_dim),
+                    nn.ReLU(),
+                    nn.Linear(manifold_dim, count),
+                    nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
+                )
+        else:
+            # Build neuromodulated circuit
+            neuromod_qc, neuromod_config = create_neuromodulated_circuit(total_qubits)
+            self.qc = neuromod_qc
+            self.neuromod_config = neuromod_config
+            self.neuromod_system = StateDependentQuantumNeuromodulation(neuromod_config)
+
+            # Determine number of learnable neuromodulation parameters as per add_parameterized_modulation
+            fear_params = len(neuromod_config.amygdala_controls) * min(3, len(neuromod_config.frontal_targets))
+            intero_params = len(neuromod_config.insula_controls) * min(3, len(neuromod_config.sensory_targets))
+            exec_params = min(2, len(neuromod_config.frontal_controls)) * len(neuromod_config.emotional_targets)
+            self.neuromod_param_count = fear_params + intero_params + exec_params
+
+            # Create ParameterVector and augment the circuit with parameterized modulation gates
+            self.neuromod_params = ParameterVector('neuromod', self.neuromod_param_count)
+            self.qc, used = self.neuromod_system.add_parameterized_modulation(self.qc, self.neuromod_params)
+
+            # Mapper from TPM features to neuromodulation strengths
+            self.neuromod_mapper = nn.Sequential(
                 nn.Linear(manifold_dim, manifold_dim),
                 nn.ReLU(),
-                nn.Linear(manifold_dim, count),
-                nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
+                nn.Linear(manifold_dim, self.neuromod_param_count),
+                nn.Sigmoid(),  # [0,1] -> scaled to angle range
             )
 
     def _tpm_to_params(self, x: torch.Tensor) -> np.ndarray:
         """
-        Aggregate TPM features across time and batch, then produce region-aware parameter vector.
+        Aggregate TPM features across time and batch, then produce:
+        - region-aware parameter vector (cognitive circuit), or
+        - neuromodulation parameter vector (neuromodulated circuit).
         """
         with torch.no_grad():
             tpm_out, phase_info = self.tpm(x, return_phase_info=True)
@@ -322,28 +362,36 @@ class HybridQuantumTemporalNetwork:
             aggregated = phase_features.mean(dim=1).mean(dim=0)  # [D]
             aggregated = aggregated.unsqueeze(0)  # [1, D]
 
-            # Build full parameter vector by filling each region segment
-            num_params = self.qbrain.num_params
-            params_full = np.zeros((num_params,), dtype=np.float32)
+            if not self.use_neuromodulation:
+                # Build full parameter vector by filling each region segment
+                num_params = self.qbrain.num_params
+                params_full = np.zeros((num_params,), dtype=np.float32)
 
-            for region_name, indices in self.region_param_indices.items():
-                mapper = self.region_mappers[region_name]
-                # Generate [1, count] in [0,1]
-                region_vals01 = mapper(aggregated).squeeze(0).cpu().numpy()
-                # Scale to [0, 2π]
-                region_vals = region_vals01 * (2 * np.pi)
-                # Insert into the global param vector
-                for local_idx, global_idx in enumerate(indices):
-                    params_full[global_idx] = region_vals[local_idx]
-
-            return params_full
+                for region_name, indices in self.region_param_indices.items():
+                    mapper = self.region_mappers[region_name]
+                    region_vals01 = mapper(aggregated).squeeze(0).cpu().numpy()
+                    region_vals = region_vals01 * (2 * np.pi)
+                    for local_idx, global_idx in enumerate(indices):
+                        params_full[global_idx] = region_vals[local_idx]
+                return params_full
+            else:
+                # Map to neuromodulation parameter strengths; scale to angle ranges
+                nm_vals01 = self.neuromod_mapper(aggregated).squeeze(0).cpu().numpy()
+                # Scale to a reasonable modulation range [0, π/2]
+                nm_angles = nm_vals01 * (np.pi / 2.0)
+                return nm_angles
 
     def quick_test(self, x: torch.Tensor, **task_kwargs) -> Tuple[Dict[str, int], float]:
         """
         Local Aer simulation to validate integration.
         """
         params = self._tpm_to_params(x)
-        param_dict = {self.qbrain.all_parameters[i]: params[i] for i in range(len(params))}
+
+        if not self.use_neuromodulation:
+            param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
+        else:
+            # Bind neuromodulation ParameterVector
+            param_dict = {self.neuromod_params[i]: float(params[i]) for i in range(len(params))}
 
         bound = self.qc.bind_parameters(param_dict)
         simulator = AerSimulator()
