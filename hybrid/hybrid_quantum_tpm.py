@@ -239,8 +239,8 @@ class TemporalPhaseManifold(nn.Module):
 # -------------------------------
 # FastQuantumBrain (FQB)
 # -------------------------------
-# Use the extended implementation with richer circuits and fitness functions.
-from hybrid.quantum_brain_extended import FastQuantumBrain
+# Use the cognitive implementation with expanded task fitness functions and runtime features.
+from hybrid.quantum_brain_cognitive import FastQuantumBrain
 
 
 # ---------------------------------------
