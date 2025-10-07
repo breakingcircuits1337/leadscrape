@@ -52,8 +52,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister, transpile
-from qiskit.circuit import ParameterVector
+from qiskit.circuit import Parameter, ParameterVector
+from qiskit.circuit.library import RealAmplitudes, EfficientSU2, TwoLocal
 from qiskit_aer import AerSimulator
+from qiskit.primitives import BackendEstimator
 
 try:
     # Optional IBM runtime imports (only needed for hardware runs)
