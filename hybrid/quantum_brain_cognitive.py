@@ -415,19 +415,21 @@ class FastQuantumBrain:
   """High-performance quantum cognitive system using 133 qubits"""
 
   def __init__(self, total_qubits=133, task_type='entropy'):
+    """High-performance quantum cognitive system with a Trainable Time Manifold."""
     self.total_qubits = total_qubits
     self.task_type = task_type
 
-    # Define brain regions with structured parameters
+    # Optimized qubit allocation with a dedicated Temporal Control region
     self.regions = {
-      'thalamus': BrainRegion('thalamus', list(range(0, 8)), 'input_routing', depth=1),
-      'occipital': BrainRegion('occipital', list(range(8, 28)), 'visual_processing', depth=2),
-      'parietal': BrainRegion('parietal', list(range(28, 48)), 'spatial_integration', depth=2),
-      'temporal': BrainRegion('temporal', list(range(48, 73)), 'memory_processing', depth=2),
-      'hippocampus': BrainRegion('hippocampus', list(range(73, 88)), 'memory_formation', depth=2),
-      'amygdala': BrainRegion('amygdala', list(range(88, 96)), 'emotional_tagging', depth=1),
-      'frontal': BrainRegion('frontal', list(range(96, 121)), 'decision_making', depth=3),
-      'cerebellum': BrainRegion('cerebellum', list(range(121, 133)), 'motor_control', depth=1)
+      'temporal_control': BrainRegion('temporal_control', list(range(0, 5)), 'dynamic_time_warping', depth=1),
+      'thalamus':     BrainRegion('thalamus', list(range(5, 13)), 'input_routing', depth=1),
+      'occipital':    BrainRegion('occipital', list(range(13, 33)), 'visual_processing', depth=2),
+      'parietal':     BrainRegion('parietal', list(range(33, 53)), 'spatial_integration', depth=2),
+      'temporal':     BrainRegion('temporal', list(range(53, 78)), 'memory_processing', depth=2),
+      'hippocampus':  BrainRegion('hippocampus', list(range(78, 93)), 'memory_formation', depth=2),
+      'amygdala':     BrainRegion('amygdala', list(range(93, 101)), 'emotional_tagging', depth=1),
+      'frontal':      BrainRegion('frontal', list(range(101, 121)), 'decision_making', depth=3),
+      'cerebellum':   BrainRegion('cerebellum', list(range(121, 133)), 'motor_control', depth=1),
     }
 
     # Build circuit and get exact parameter count
@@ -484,6 +486,23 @@ class FastQuantumBrain:
           ent_idx += 1
 
     return param_offset + region.param_count()
+
+  def _add_temporally_controlled_layer(self, qc, processing_qubits, control_qubits, theta, tau):
+    """
+    Applies a processing layer where the evolution is scaled by a time parameter 'tau'
+    and controlled by the state of 'control_qubits'.
+    """
+    num_p = len(processing_qubits)
+    clock_qubit = control_qubits[0]
+
+    # Controlled rotations with angle theta * tau
+    for i in range(num_p):
+      qc.cry(theta[i] * tau[i], clock_qubit, processing_qubits[i])
+
+    # Controlled entanglement using second control qubit if available
+    if len(control_qubits) > 1:
+      for i in range(num_p - 1):
+        qc.ccx(control_qubits[1], processing_qubits[i], processing_qubits[i + 1])
 
   def build_cognitive_circuit(self):
     """
@@ -562,6 +581,82 @@ class FastQuantumBrain:
     qc.measure(qr, cr)
 
     # Store circuit and parameters
+    self.circuit_template = qc
+    self.all_parameters = list(qc.parameters)
+    self.num_params = len(self.all_parameters)
+
+    return qc
+
+  def build_fast_cognitive_circuit(self, depth=2):
+    """
+    Builds a cognitive circuit with a data-driven, non-linear time manifold.
+    """
+    qr = QuantumRegister(self.total_qubits, 'brain')
+    cr = ClassicalRegister(self.total_qubits, 'measure')
+    qc = QuantumCircuit(qr, cr)
+
+    # Calculate the number of parameters needed
+    param_count = 0
+    processing_regions = {k: v for k, v in self.regions.items() if k != 'temporal_control'}
+    for region in processing_regions.values():
+      param_count += len(region.qubits) * depth
+    param_count += len(self.regions['temporal_control'].qubits)
+
+    # Create parameter vectors
+    theta = ParameterVector('theta', param_count)
+    tau = ParameterVector('tau', param_count)
+    self.num_params = param_count * 2
+
+    p_idx = 0
+
+    # PHASE 1: TEMPORAL & SENSORY ENCODING
+    temp_q = self.regions['temporal_control'].qubits
+    thal_q = self.regions['thalamus'].qubits
+
+    for q in thal_q + temp_q:
+      qc.h(q)
+
+    for i, q in enumerate(thal_q):
+      qc.rz(theta[p_idx], q)
+      p_idx += 1
+
+    for i in range(min(len(thal_q), len(temp_q))):
+      qc.cx(thal_q[i], temp_q[i])
+
+    for i, q in enumerate(temp_q):
+      qc.ry(theta[p_idx], q)
+      p_idx += 1
+    for i in range(len(temp_q) - 1):
+      qc.cz(temp_q[i], temp_q[i + 1])
+
+    qc.barrier()
+
+    # PHASE 2: TEMPORALLY-CONTROLLED COGNITION
+    for region_name in ['occipital', 'parietal', 'temporal', 'frontal']:
+      region_qubits = self.regions[region_name].qubits
+      for layer in range(depth):
+        theta_slice = theta[p_idx: p_idx + len(region_qubits)]
+        tau_slice = tau[p_idx: p_idx + len(region_qubits)]
+        self._add_temporally_controlled_layer(qc, region_qubits, temp_q, theta_slice, tau_slice)
+        p_idx += len(region_qubits)
+      qc.barrier()
+
+    # PHASE 3: FINAL INTEGRATION & ACTION
+    frontal_q = self.regions['frontal'].qubits
+    cereb_q = self.regions['cerebellum'].qubits
+
+    for i in range(min(8, len(frontal_q), len(cereb_q))):
+      qc.ccx(temp_q[min(2, len(temp_q) - 1)], frontal_q[i], cereb_q[i])
+
+    theta_slice = theta[p_idx: p_idx + len(cereb_q)]
+    tau_slice = tau[p_idx: p_idx + len(cereb_q)]
+    self._add_temporally_controlled_layer(qc, cereb_q, temp_q, theta_slice, tau_slice)
+    p_idx += len(cereb_q)
+
+    # Measurement
+    qc.measure(qr, cr)
+
+    # Track parameters
     self.circuit_template = qc
     self.all_parameters = list(qc.parameters)
     self.num_params = len(self.all_parameters)
