@@ -410,6 +410,8 @@ class HybridQuantumTemporalNetwork:
         num_iterations: int = 5,
         population_size: int = 4,
         shots: int = 512,
+        use_dynamic_decoupling: bool = True,
+        resilience_level: int = 3,
         **task_kwargs,
     ):
         """
@@ -425,7 +427,17 @@ class HybridQuantumTemporalNetwork:
         options = Options()
         options.execution.shots = shots
         options.optimization_level = 3
-        options.resilience_level = 1
+        options.resilience_level = resilience_level
+
+        # Enable dynamic decoupling for real hardware if requested
+        try:
+            is_simulator = getattr(backend.configuration(), "simulator", False)
+        except Exception:
+            is_simulator = False
+        if use_dynamic_decoupling and not is_simulator:
+            # Configure XY4 DD sequence
+            options.dynamical_decoupling.enable = True
+            options.dynamical_decoupling.sequence_type = 'XY4'
 
         # Initialize population by TPM-driven params + random perturbations
         base_params = self._tpm_to_params(x)
@@ -440,7 +452,10 @@ class HybridQuantumTemporalNetwork:
             for it in range(num_iterations):
                 circuits = []
                 for params in population:
-                    param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
+                    if not self.use_neuromodulation:
+                        param_dict = {self.qbrain.all_parameters[i]: float(params[i]) for i in range(len(params))}
+                    else:
+                        param_dict = {self.neuromod_params[i]: float(params[i]) for i in range(len(params))}
                     circuits.append(self.qc.bind_parameters(param_dict))
 
                 job = sampler.run(circuits)
