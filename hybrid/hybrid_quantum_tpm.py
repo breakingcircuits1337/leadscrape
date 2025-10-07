@@ -276,34 +276,65 @@ class HybridQuantumTemporalNetwork:
         self.qbrain = FastQuantumBrain(total_qubits=total_qubits, task_type=task_type)
         self.qc = self.qbrain.build_cognitive_circuit()
 
-        # Simple linear mapping from TPM features to quantum parameters
-        # Project [B, T, manifold_dim] -> flattened parameter vector length = num_params
-        self.param_mapper = nn.Sequential(
-            nn.Linear(manifold_dim, manifold_dim),
-            nn.ReLU(),
-            nn.Linear(manifold_dim, self.qbrain.num_params),
-            nn.Sigmoid(),  # map to [0,1], then scaled to [0, 2π]
-        )
+        # Region-aware parameter mapping:
+        # For each brain region, create a dedicated mapper that outputs that region's parameter vector.
+        # We identify parameter ownership by the Parameter.name prefix (e.g., "frontal_rot[...]", "amygdala_ent[...]").
+        self.region_param_indices: Dict[str, List[int]] = {}
+        self.region_param_counts: Dict[str, int] = {}
+
+        # Build indices for parameters by region name
+        for idx, p in enumerate(self.qbrain.all_parameters):
+            # Parameter names are derived from ParameterVector, like 'frontal_rot0', 'frontal_ent3', etc.
+            name = str(p)
+            # Extract region prefix before the first underscore
+            # e.g., "frontal_rot0" -> "frontal"
+            region_prefix = name.split('_', 1)[0]
+            self.region_param_indices.setdefault(region_prefix, []).append(idx)
+
+        # Count per region
+        for region_name, indices in self.region_param_indices.items():
+            self.region_param_counts[region_name] = len(indices)
+
+        # Create per-region mappers
+        # Each mapper: [manifold_dim] -> [num_params_for_region]
+        self.region_mappers = nn.ModuleDict()
+        for region_name, count in self.region_param_counts.items():
+            self.region_mappers[region_name] = nn.Sequential(
+                nn.Linear(manifold_dim, manifold_dim),
+                nn.ReLU(),
+                nn.Linear(manifold_dim, count),
+                nn.Sigmoid(),  # [0,1] -> later scaled to [0, 2π]
+            )
 
     def _tpm_to_params(self, x: torch.Tensor) -> np.ndarray:
         """
-        Aggregate TPM features across time and batch, then map to circuit parameters.
+        Aggregate TPM features across time and batch, then produce region-aware parameter vector.
         """
         with torch.no_grad():
             tpm_out, phase_info = self.tpm(x, return_phase_info=True)
-            # Use phase_features as a robust representation: [B, T, D] or [B, T]
-            phase_features = phase_info['phase_features']
+            phase_features = phase_info['phase_features']  # [B, T, D] or [B, T]
             if phase_features.dim() == 2:
-                # [B, T] -> expand to [B, T, 1]
-                phase_features = phase_features.unsqueeze(-1)
+                phase_features = phase_features.unsqueeze(-1)  # [B, T, 1]
 
-            # Aggregate across time (mean) and batch (mean)
+            # Aggregate across time and batch to a global control vector [D]
             aggregated = phase_features.mean(dim=1).mean(dim=0)  # [D]
             aggregated = aggregated.unsqueeze(0)  # [1, D]
 
-            params_01 = self.param_mapper(aggregated)  # [1, num_params] in [0,1]
-            params = params_01.squeeze(0).cpu().numpy() * (2 * np.pi)  # scale to [0, 2π]
-            return params
+            # Build full parameter vector by filling each region segment
+            num_params = self.qbrain.num_params
+            params_full = np.zeros((num_params,), dtype=np.float32)
+
+            for region_name, indices in self.region_param_indices.items():
+                mapper = self.region_mappers[region_name]
+                # Generate [1, count] in [0,1]
+                region_vals01 = mapper(aggregated).squeeze(0).cpu().numpy()
+                # Scale to [0, 2π]
+                region_vals = region_vals01 * (2 * np.pi)
+                # Insert into the global param vector
+                for local_idx, global_idx in enumerate(indices):
+                    params_full[global_idx] = region_vals[local_idx]
+
+            return params_full
 
     def quick_test(self, x: torch.Tensor, **task_kwargs) -> Tuple[Dict[str, int], float]:
         """
