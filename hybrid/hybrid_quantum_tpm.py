@@ -237,146 +237,8 @@ class TemporalPhaseManifold(nn.Module):
 # -------------------------------
 # FastQuantumBrain (FQB)
 # -------------------------------
-
-class BrainRegion:
-    def __init__(self, name: str, qubits: List[int], function: str, depth: int = 2):
-        self.name = name
-        self.qubits = qubits
-        self.function = function
-        self.depth = depth
-
-        num_qubits = len(qubits)
-        self.params = {
-            'rotation': ParameterVector(f'{name}_rot', num_qubits * depth),
-            'entanglement': ParameterVector(f'{name}_ent', max(0, (num_qubits - 1) * depth)),
-        }
-
-    def get_all_params(self) -> List:
-        out = []
-        for pv in self.params.values():
-            out.extend(pv)
-        return out
-
-    def param_count(self) -> int:
-        return sum(len(pv) for pv in self.params.values())
-
-
-class CognitiveFitnessEvaluator:
-    @staticmethod
-    def entropy_fitness(counts: Dict[str, int]) -> float:
-        total = sum(counts.values())
-        if total == 0:
-            return 0.0
-        probs = [c / total for c in counts.values()]
-        entropy = -sum(p * np.log2(p + 1e-12) for p in probs if p > 0)
-        max_entropy = np.log2(len(counts)) if len(counts) > 1 else 1
-        return float(entropy / max_entropy) if max_entropy > 0 else 0.0
-
-
-class FastQuantumBrain:
-    def __init__(self, total_qubits=133, task_type='entropy'):
-        self.total_qubits = total_qubits
-        self.task_type = task_type
-
-        self.regions = {
-            'thalamus': BrainRegion('thalamus', list(range(0, 8)), 'input_routing', depth=1),
-            'occipital': BrainRegion('occipital', list(range(8, 28)), 'visual_processing', depth=2),
-            'parietal': BrainRegion('parietal', list(range(28, 48)), 'spatial_integration', depth=2),
-            'temporal': BrainRegion('temporal', list(range(48, 73)), 'memory_processing', depth=2),
-            'hippocampus': BrainRegion('hippocampus', list(range(73, 88)), 'memory_formation', depth=2),
-            'amygdala': BrainRegion('amygdala', list(range(88, 96)), 'emotional_tagging', depth=1),
-            'frontal': BrainRegion('frontal', list(range(96, 121)), 'decision_making', depth=3),
-            'cerebellum': BrainRegion('cerebellum', list(range(121, 133)), 'motor_control', depth=1),
-        }
-
-        self.circuit_template = None
-        self.all_parameters = None
-        self.num_params = 0
-
-        self.fitness_evaluator = CognitiveFitnessEvaluator()
-
-    def _add_region_layer(self, qc: QuantumCircuit, region: BrainRegion):
-        qubits = region.qubits
-        rot_params = region.params['rotation']
-        ent_params = region.params['entanglement']
-
-        rot_idx = 0
-        ent_idx = 0
-
-        for _ in range(region.depth):
-            for i, q in enumerate(qubits):
-                qc.ry(rot_params[rot_idx], q)
-                rot_idx += 1
-
-            for i in range(len(qubits) - 1):
-                qc.cx(qubits[i], qubits[i + 1])
-                if ent_idx < len(ent_params):
-                    qc.rz(ent_params[ent_idx], qubits[i + 1])
-                    ent_idx += 1
-
-    def build_cognitive_circuit(self) -> QuantumCircuit:
-        qr = QuantumRegister(self.total_qubits, 'brain')
-        cr = ClassicalRegister(self.total_qubits, 'measure')
-        qc = QuantumCircuit(qr, cr)
-
-        # Input encoding
-        thal = self.regions['thalamus']
-        for q in thal.qubits:
-            qc.h(q)
-        self._add_region_layer(qc, thal)
-
-        # Sensory processing
-        occ = self.regions['occipital']
-        par = self.regions['parietal']
-        for i, tq in enumerate(thal.qubits[:4]):
-            if i < len(occ.qubits):
-                qc.cx(tq, occ.qubits[i])
-            if i < len(par.qubits):
-                qc.cx(tq, par.qubits[i])
-        self._add_region_layer(qc, occ)
-        self._add_region_layer(qc, par)
-
-        # Memory system
-        temp = self.regions['temporal']
-        hippo = self.regions['hippocampus']
-        amyg = self.regions['amygdala']
-
-        for i in range(min(10, len(occ.qubits), len(temp.qubits))):
-            qc.cx(occ.qubits[i], temp.qubits[i])
-        self._add_region_layer(qc, temp)
-
-        for i in range(min(len(temp.qubits), len(hippo.qubits))):
-            qc.cx(temp.qubits[i], hippo.qubits[i])
-        self._add_region_layer(qc, hippo)
-
-        for i in range(min(len(hippo.qubits), len(amyg.qubits))):
-            qc.cx(hippo.qubits[i], amyg.qubits[i])
-        self._add_region_layer(qc, amyg)
-
-        # Executive
-        front = self.regions['frontal']
-        for i in range(min(len(hippo.qubits), len(front.qubits))):
-            qc.cx(hippo.qubits[i], front.qubits[i])
-        for i in range(min(len(amyg.qubits), len(front.qubits))):
-            idx = min(i + 8, len(front.qubits) - 1)
-            qc.cx(amyg.qubits[i], front.qubits[idx])
-        self._add_region_layer(qc, front)
-
-        # Motor
-        cereb = self.regions['cerebellum']
-        for i in range(min(8, len(front.qubits), len(cereb.qubits))):
-            qc.cx(front.qubits[i], cereb.qubits[i])
-        self._add_region_layer(qc, cereb)
-
-        qc.measure(qr, cr)
-
-        self.circuit_template = qc
-        self.all_parameters = list(qc.parameters)
-        self.num_params = len(self.all_parameters)
-        return qc
-
-    def compute_fitness(self, counts: Dict[str, int]) -> float:
-        return self.fitness_evaluator.entropy_fitness(counts)
+# Use the extended implementation with richer circuits and fitness functions.
+from hybrid.quantum_brain_extended import FastQuantumBrain
 
 
 # ---------------------------------------
@@ -443,7 +305,7 @@ class HybridQuantumTemporalNetwork:
             params = params_01.squeeze(0).cpu().numpy() * (2 * np.pi)  # scale to [0, 2π]
             return params
 
-    def quick_test(self, x: torch.Tensor) -> Tuple[Dict[str, int], float]:
+    def quick_test(self, x: torch.Tensor, **task_kwargs) -> Tuple[Dict[str, int], float]:
         """
         Local Aer simulation to validate integration.
         """
@@ -456,7 +318,7 @@ class HybridQuantumTemporalNetwork:
         job = simulator.run(transpiled, shots=1024)
         counts = job.result().get_counts()
 
-        fitness = self.qbrain.compute_fitness(counts)
+        fitness = self.qbrain.compute_fitness(counts, **task_kwargs)
 
         return counts, fitness
 
@@ -467,6 +329,7 @@ class HybridQuantumTemporalNetwork:
         num_iterations: int = 5,
         population_size: int = 4,
         shots: int = 512,
+        **task_kwargs,
     ):
         """
         Hardware/runtime execution with simple evolutionary loop around TPM->params.
@@ -506,7 +369,7 @@ class HybridQuantumTemporalNetwork:
                 for i in range(population_size):
                     quasi_dist = result.quasi_dists[i]
                     counts = {format(k, f'0{self.qbrain.total_qubits}b'): int(v * shots) for k, v in quasi_dist.items()}
-                    fitness = self.qbrain.compute_fitness(counts)
+                    fitness = self.qbrain.compute_fitness(counts, **task_kwargs)
                     fitness_scores.append(fitness)
 
                 best_idx = int(np.argmax(fitness_scores))
