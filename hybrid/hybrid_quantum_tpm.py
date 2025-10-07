@@ -464,6 +464,52 @@ class HybridQuantumTemporalNetwork:
 
         return counts, fitness
 
+    def _compute_multi_objective_fitness(self, counts: Dict[str, int], objectives: Dict[str, float], **task_kwargs) -> float:
+        """
+        Compute a weighted sum of multiple cognitive fitness functions.
+        objectives example:
+          {'inhibition': 0.4, 'flexibility': 0.3, 'attention': 0.3}
+        """
+        if not objectives:
+            return self.qbrain.compute_fitness(counts, **task_kwargs)
+
+        evalr = self.qbrain.fitness_evaluator
+        # Map objective keys to evaluator functions
+        obj_map = {
+            'entropy': evalr.entropy_fitness,
+            'decision': evalr.decision_making_fitness,
+            'pattern': evalr.pattern_matching_fitness,
+            'memory': evalr.memory_retrieval_fitness,
+            'classification': evalr.classification_fitness,
+            'spatial': evalr.spatial_reasoning_fitness,
+            'working_memory': evalr.working_memory_fitness if hasattr(evalr, 'working_memory_fitness') else None,
+            'attention': evalr.attention_focus_fitness if hasattr(evalr, 'attention_focus_fitness') else None,
+            'sequence': evalr.sequence_learning_fitness if hasattr(evalr, 'sequence_learning_fitness') else None,
+            'problem_solving': evalr.problem_solving_fitness if hasattr(evalr, 'problem_solving_fitness') else None,
+            'flexibility': evalr.cognitive_flexibility_fitness if hasattr(evalr, 'cognitive_flexibility_fitness') else None,
+            'error_detection': evalr.error_detection_fitness if hasattr(evalr, 'error_detection_fitness') else None,
+            'inhibition': evalr.inhibition_control_fitness if hasattr(evalr, 'inhibition_control_fitness') else None,
+            'analogy': evalr.analogical_reasoning_fitness if hasattr(evalr, 'analogical_reasoning_fitness') else None,
+            'reward_learning': evalr.reward_learning_fitness if hasattr(evalr, 'reward_learning_fitness') else None,
+            'predictive': evalr.predictive_coding_fitness if hasattr(evalr, 'predictive_coding_fitness') else None,
+        }
+
+        total = 0.0
+        weight_sum = 0.0
+        for key, w in objectives.items():
+            fn = obj_map.get(key)
+            if fn is None:
+                continue
+            try:
+                score = float(fn(counts, **task_kwargs))
+            except TypeError:
+                # If signature mismatch, call without kwargs
+                score = float(fn(counts))
+            total += w * score
+            weight_sum += w
+
+        return total / weight_sum if weight_sum > 0 else 0.0
+
     def run_on_ibm(
         self,
         x: torch.Tensor,
@@ -473,10 +519,12 @@ class HybridQuantumTemporalNetwork:
         shots: int = 512,
         use_dynamic_decoupling: bool = True,
         resilience_level: int = 3,
+        objectives: Dict[str, float] = None,
         **task_kwargs,
     ):
         """
         Hardware/runtime execution with simple evolutionary loop around TPM->params.
+        Supports multi-objective fitness aggregation via 'objectives' dict.
         Requires IBM Quantum account configured for QiskitRuntimeService.
         """
         if not HAS_IBM_RUNTIME:
@@ -526,7 +574,7 @@ class HybridQuantumTemporalNetwork:
                 for i in range(population_size):
                     quasi_dist = result.quasi_dists[i]
                     counts = {format(k, f'0{self.qbrain.total_qubits}b'): int(v * shots) for k, v in quasi_dist.items()}
-                    fitness = self.qbrain.compute_fitness(counts, **task_kwargs)
+                    fitness = self._compute_multi_objective_fitness(counts, objectives or {}, **task_kwargs)
                     fitness_scores.append(fitness)
 
                 best_idx = int(np.argmax(fitness_scores))
