@@ -714,6 +714,17 @@ class HybridQuantumTemporalNetwork:
                 best_fitness = float(fitness_scores[best_idx])
                 fitness_history.append(best_fitness)
 
+                # Logging: sigma/eigenvalues (CMA) or avg sigma (ES)
+                if use_cma_es:
+                    # D are sqrt of eigenvalues; eigenvalues = D^2
+                    D = cma['D']
+                    eigvals = D ** 2
+                    sigma = cma['sigma']
+                    print(f"[Iter {it+1}] fitness={best_fitness:.4f} | CMA sigma={sigma:.4f} | eig(min/med/max)=({eigvals.min():.4e}/{np.median(eigvals):.4e}/{eigvals.max():.4e})")
+                else:
+                    avg_sigma = float(np.mean([ind['sigma'].mean() for ind in population]))
+                    print(f"[Iter {it+1}] fitness={best_fitness:.4f} | ES avg_sigma={avg_sigma:.4f}")
+
                 # Update strategy
                 if use_cma_es:
                     self._cma_tell(cma, xs, zs, ys, np.array(fitness_scores), rng)
