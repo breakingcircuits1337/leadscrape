@@ -14,73 +14,28 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => Array.from(el.querySelectorAll(sel));
 
 /* Data model */
-function getItems() {
-  const now = Date.now();
-  // Mocked items for demo; replace with backend data
-  return [
-    {
-      id: "cisa-kev-2025-0001",
-      source: "CISA",
-      title: "CISA adds CVE-2025-0001 to Known Exploited Vulnerabilities",
-      blurb: "Active exploitation observed in the wild. Federal agencies must remediate by the specified due date.",
-      url: "reader.html?id=cisa-kev-2025-0001",
-      published_at: new Date(now - 5 * 60 * 1000).toISOString(),
-      severity: "critical",
-      badges: ["KEV", "Exploit In The Wild"],
-      meta: { cves: ["CVE-2025-0001"], epss: 0.92 }
-    },
-    {
-      id: "nvd-ms-azure-cves",
-      source: "NVD",
-      title: "Multiple Azure services impacted by elevation of privilege flaws",
-      blurb: "NVD published CVEs affecting Azure compute with patches available. Exploitation less likely per MSRC.",
-      url: "reader.html?id=nvd-ms-azure-cves",
-      published_at: new Date(now - 25 * 60 * 1000).toISOString(),
-      severity: "high",
-      badges: ["Cloud", "CVE"],
-      meta: { cves: ["CVE-2025-1002", "CVE-2025-1003"] }
-    },
-    {
-      id: "arxiv-crypto-scheme",
-      source: "arXiv",
-      title: "On the Security of Post-Quantum Lattice Schemes under Chosen-Ciphertext",
-      blurb: "New preprint analyzes side-channel resilience and proposes mitigations for key encapsulation mechanisms.",
-      url: "reader.html?id=arxiv-crypto-scheme",
-      published_at: new Date(now - 65 * 60 * 1000).toISOString(),
-      severity: "info",
-      badges: ["Research"]
-    },
-    {
-      id: "thn-ransomware-campaign",
-      source: "The Hacker News",
-      title: "New Ransomware Campaign Targets ESXi via Compromised IT MSP Accounts",
-      blurb: "Attackers pivot through MSP RMM tools; indicators include IPs and hashes now circulating on OSINT lists.",
-      url: "reader.html?id=thn-ransomware-campaign",
-      published_at: new Date(now - 8 * 60 * 1000).toISOString(),
-      severity: "elevated",
-      badges: ["Ransomware"]
-    },
-    {
-      id: "microsoft-threat-intel",
-      source: "Microsoft Security",
-      title: "Storm-1234 weaponizes open-source module for kernel-level persistence",
-      blurb: "Observed in targeted attacks against telecom; mitigations and hunting queries provided.",
-      url: "reader.html?id=microsoft-threat-intel",
-      published_at: new Date(now - 120 * 60 * 1000).toISOString(),
-      severity: "high",
-      badges: ["Threat Intel"]
-    },
-    {
-      id: "mandiant-supply-chain",
-      source: "Mandiant",
-      title: "Supply-chain compromise delivers trojanized desktop update client",
-      blurb: "Signed binary abused to deploy loader; C2 over DNS with domain fronting. IOCs and YARA published.",
-      url: "reader.html?id=mandiant-supply-chain",
-      published_at: new Date(now - 15 * 60 * 1000).toISOString(),
-      severity: "critical",
-      badges: ["Supply Chain", "YARA"]
-    }
-  ];
+async function getItems() {
+  // Prefer backend API; fallback to a tiny local dataset if not available.
+  try {
+    const res = await fetch("/api/items?limit=120", { headers: { "accept": "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data.items) ? data.items : [];
+  } catch {
+    const now = Date.now();
+    return [
+      {
+        id: "demo:cisa",
+        source: "CISA",
+        title: "Backend offline — showing demo content",
+        blurb: "Start the server (npm install && npm run dev) to pull live CISA/NVD/THN/arXiv feeds.",
+        url: "reader.html?id=demo:cisa",
+        published_at: new Date(now - 2 * 60 * 1000).toISOString(),
+        severity: "info",
+        badges: ["Demo"],
+      },
+    ];
+  }
 }
 
 /* State */
@@ -267,8 +222,8 @@ function initPolling() {
 }
 
 /* Boot */
-document.addEventListener("DOMContentLoaded", () => {
-  State.items = getItems();
+document.addEventListener("DOMContentLoaded", async () => {
+  State.items = await getItems();
   initControls();
   initPolling();
   render();
