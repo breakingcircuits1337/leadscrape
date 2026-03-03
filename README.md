@@ -52,16 +52,29 @@ A minimal, client-side visual novel template you can clone and run anywhere. Wri
 
 ## Getting started
 
+### Frontend only
+
 - Quick start (no tooling)
   - Download or clone this repo
   - Open index.html in a modern browser
 
-- Local server (recommended for assets/debug)
-  - Python: python3 -m http.server 8000
-  - Node: npx http-server . -p 8000
-  - VS Code: use the “Live Server” extension
+### Full app (recommended: live feeds + reader content)
 
-Then visit http://localhost:8000 (or the port you chose).
+1) Install deps
+
+- npm install
+
+2) Run the server
+
+- npm run dev
+
+Then visit http://localhost:3000
+
+Notes:
+- The backend serves the static UI + provides:
+  - GET /api/items
+  - GET /api/item/:id
+- Data sources (MVP): CISA KEV JSON, NVD CVE 2.0 API (last 24h), The Hacker News RSS, arXiv cs.CR Atom.
 
 ---
 

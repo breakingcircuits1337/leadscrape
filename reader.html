@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>The Mainframe — Reader</title>
+  <link rel="stylesheet" href="styles/reader.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <article class="reader">
+    <header class="reader-header">
+      <div>
+        <div class="source" id="source">via —</div>
+        <h1 id="title">Loading…</h1>
+        <div class="meta">
+          <span id="time">—</span>
+          <span class="badge" id="severity"></span>
+          <span class="badge" id="badges"></span>
+        </div>
+      </div>
+      <div>
+        <a id="open-original" class="link" target="_blank" rel="noopener noreferrer">Open original</a>
+      </div>
+    </header>
+
+    <section class="summary">
+      <p id="blurb"></p>
+    </section>
+
+    <section class="content">
+      <div id="content">
+        This is a clean reader view. In production, the server would fetch and sanitize the original content, preserving structure, code blocks, and indicators.
+      </div>
+    </section>
+  </article>
+
+  <script src="scripts/reader.js"></script>
+</body>
+</html>

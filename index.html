@@ -3,76 +3,83 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Visual Novel Demo</title>
-  <link rel="preload" as="image" href="assets/images/bg/bg_home.png">
-  <link rel="preload" as="image" href="assets/images/bg/bg_classroom.png">
-  <link rel="preload" as="image" href="assets/images/char/char_a.png">
-  <link rel="preload" as="image" href="assets/images/char/char_b.png">
-  <link rel="stylesheet" href="styles/style.css">
+  <title>The Mainframe — Real-time Cyber Intelligence</title>
+  <link rel="stylesheet" href="styles/mainframe.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
 </head>
 <body>
-  <div id="app">
-    <!-- Title Screen -->
-    <div id="title-screen" class="screen active">
-      <div class="title-content">
-        <h1 class="game-title">Cosine VN Engine</h1>
-        <div class="menu">
-          <button id="continue-btn" class="primary" disabled>Continue</button>
-          <button id="newgame-btn" class="secondary">Start New Game</button>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">MF</div>
+        <div class="brand-meta">
+          <h1>The Mainframe</h1>
+          <span class="tagline">Real-time cyber intelligence. Signal without the noise.</span>
         </div>
       </div>
-    </div>
-
-    <!-- Game Screen -->
-    <div id="game-screen" class="screen">
-      <button id="mute-btn" class="mute-btn" aria-label="Toggle Mute">🔇</button>
-      <button id="devconsole-toggle" class="dev-toggle" aria-label="Developer Console">Dev Console</button>
-      <div id="scene-container">
-        <img id="bg-image" alt="Background"/>
-        <img id="portrait-image" alt="Portrait" />
-        <audio id="bgm" loop></audio>
-        <div id="wipe-overlay"></div>
-      </div>
-
-      <div id="dialogue-layer" class="click-advance">
-        <div id="name-tag"></div>
-        <div id="dialogue-box">
-          <div id="dialogue-speaker"></div>
-          <div id="dialogue-text"></div>
-          <div id="advance-indicator">▶</div>
-          <div id="continue-hint">Click or press Space/Enter to continue</div>
+      <div class="controls">
+        <div class="control">
+          <label>Sources</label>
+          <select id="filter-source" multiple>
+            <option value="all" selected>All</option>
+            <option value="CISA">CISA</option>
+            <option value="NVD">NVD</option>
+            <option value="Mandiant">Mandiant</option>
+            <option value="Microsoft Security">Microsoft Security</option>
+            <option value="The Hacker News">The Hacker News</option>
+            <option value="arXiv">arXiv</option>
+          </select>
+        </div>
+        <div class="control">
+          <label>Severity</label>
+          <select id="filter-severity">
+            <option value="any" selected>Any</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="elevated">Elevated</option>
+            <option value="info">Info</option>
+          </select>
+        </div>
+        <div class="control">
+          <label>Sort</label>
+          <select id="sort-order">
+            <option value="latest" selected>Latest</option>
+            <option value="priority">Highest Priority</option>
+          </select>
+        </div>
+        <div class="control search">
+          <input id="search" type="search" placeholder="Search headlines and blurbs">
         </div>
       </div>
-    </div>
+    </header>
 
-    <!-- Choices Overlay -->
-    <div id="choices-overlay" class="overlay hidden">
-      <div class="choices-panel">
-        <h3>Make a choice</h3>
-        <div id="choices-container"></div>
-        <button id="choices-cancel" class="link small hidden">Cancel</button>
-      </div>
-    </div>
+    <main class="content">
+      <aside class="sidebar">
+        <div class="panel">
+          <div class="panel-title">Quick Filters</div>
+          <button class="chip" data-chip="kev">KEV only</button>
+          <button class="chip" data-chip="cve-today">CVEs today</button>
+          <button class="chip" data-chip="ransomware">Ransomware</button>
+          <button class="chip" data-chip="cloud">Cloud</button>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Status</div>
+          <div class="stat"><span id="stat-total">0</span> items</div>
+          <div class="stat"><span id="stat-new">0</span> new</div>
+        </div>
+      </aside>
 
-    <!-- Dev Console -->
-    <div id="dev-console" class="overlay hidden">
-      <div class="dev-panel">
-        <div class="dev-header">
-          <h3>Developer Console</h3>
-          <button id="devconsole-close" class="link">Close</button>
-        </div>
-        <div class="dev-body">
-          <p>This is where developers can add tools to skip, inspect state, or jump to scenes.</p>
-          <div class="dev-actions">
-            <button data-jump="scene1" class="small">Jump: Scene 1</button>
-            <button data-jump="scene2" class="small">Jump: Scene 2</button>
-            <button id="dev-skip-to-end" class="small">Skip to End</button>
-          </div>
-          <pre id="dev-state"></pre>
-        </div>
-      </div>
-    </div>
+      <section class="grid-wrap">
+        <div id="new-indicator" class="new-indicator hidden">New items</div>
+        <div id="grid" class="grid"></div>
+      </section>
+    </main>
   </div>
-  <script src="scripts/script.js"></script>
+
+  <div id="glitch-layer" aria-hidden="true"></div>
+
+  <script src="scripts/mainframe.js"></script>
 </body>
 </html>
